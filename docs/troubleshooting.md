@@ -91,6 +91,45 @@ Re-verified with the same `Get-WindowsFeature` command, now showing `Installed`.
 
 ---
 
-## Pattern across all four issues
+## 5. Security group created in the wrong OU
 
-Every one of these was ultimately caught by **verifying actual system state with a command** (`hostname`, `ipconfig`, `Get-WindowsFeature`, the UEFI boot log itself) rather than trusting a GUI's summary at face value. That's probably the single biggest practical takeaway from this phase of the lab.
+**Symptom:** After creating `SEC-IT` and `SEC-Sales` successfully inside `Groups\Security-Groups`, attempting to create `SEC-Finance` and `SEC-Management` the same way appeared to do nothing — the new groups weren't visible in the `Security-Groups` OU. Re-attempting to create them produced an "object already exists" error.
+
+**Diagnosis:**
+1. The "already exists" error was the key clue: the groups **had** been created — they just weren't where expected.
+2. Selecting the parent `Groups` OU (one level up) instead of `Security-Groups` revealed `SEC-Finance` and `SEC-Management` sitting directly inside it, alongside the `Security-Groups` OU itself as a sibling object.
+3. Root cause: **New → Group** had been triggered from a right-click on `Groups` instead of `Security-Groups` — an easy mistake in a deeply nested tree with visually similar row heights.
+
+**Fix:** used **right-click → Move...** on each misplaced group to relocate it into `Security-Groups`, rather than deleting and recreating them. Verified the final state independent of the GUI:
+```powershell
+Get-ADGroup -Filter * -SearchBase "OU=Security-Groups,OU=Groups,OU=ContosoLab,DC=lab,DC=lan" | Select Name
+```
+which returned all four expected groups.
+
+**Lesson:** in a nested OU tree, always double-check which node is actually selected/highlighted before right-clicking "New" — and when an object "seems missing" after creation, check one level up in the tree before assuming it wasn't created at all.
+
+---
+
+## 6. VMware Tools installed but clipboard sharing doesn't work
+
+**Symptom:** Copy-paste between the host PC and the DC01 VM didn't work, blocking an easy way to transfer a PowerShell script into the guest.
+
+**Diagnosis:**
+1. Checked **VM → Settings → Options → Guest Isolation**: "Enable copy and paste" and "Enable drag and drop" were checked, but greyed out / non-interactive — a strong signal that VMware itself considers VMware Tools not properly running, regardless of what was "installed" before.
+2. Verified directly from the guest:
+   ```powershell
+   Get-Service VMTools
+   ```
+   returned **"Cannot find any service with service name 'VMTools'"** — proof the service didn't exist at all, meaning VMware Tools was never actually fully installed, despite an earlier attempt.
+3. Checked the VM's right-click menu on the host side: it showed **"Cancel VMware Tools Installation"** rather than "Install VMware Tools" — meaning the installer ISO was already mounted inside the guest from a prior attempt, but the setup executable inside it had never actually been run to completion.
+4. Located the mounted VMware Tools virtual CD-ROM inside the guest (via File Explorer) — modern 64-bit-only Tools packages ship with a single `setup.exe` (no more separate `setup32.exe`/`setup64.exe`), which wasn't the file initially expected.
+
+**Fix:** ran `setup.exe` from the mounted CD-ROM drive **as Administrator** from inside the guest, completed the full installation wizard, and rebooted. `Get-Service VMTools` then returned `Status: Running`, and clipboard sharing started working immediately.
+
+**Lesson:** "VM → Install VMware Tools" from the host only *mounts the installer ISO* inside the guest — it does not run the installation. The actual `setup.exe` must be executed manually, with administrator privileges, from inside the guest OS for the installation to actually take effect.
+
+---
+
+## Pattern across all issues
+
+Nearly every one of these was ultimately caught by **verifying actual system state with a command** (`hostname`, `ipconfig`, `Get-WindowsFeature`, `Get-Service`, `Get-ADGroup`, the UEFI boot log itself) rather than trusting a GUI's summary at face value. That's probably the single biggest practical takeaway from this project so far.
